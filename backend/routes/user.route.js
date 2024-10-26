@@ -1,4 +1,6 @@
 import express from "express";
+import isAuthenticated from "../middlewares/isAuthenticated.js";
+import upload from "../middlewares/multer.js";
 import {
   editProfile,
   followOrUnfollow,
@@ -12,23 +14,24 @@ import {
   resendLoginOTP,
   resendSignupOTP,
 } from "../controllers/user.controller.js";
-import isAuthenticated from "../middlewares/isAuthenticated.js";
-import upload from "../middlewares/multer.js";
 
 const router = express.Router();
 
-router.route("/register").post(register);
-router.route("/verify-email").post(verifyEmail);
-router.route("/login").post(login);
-router.route("/verify-login-otp").post(verifyLoginOTP);
-router.route("/resend-login-otp").post(resendLoginOTP);
-router.route("/resend-signup-otp").post(resendSignupOTP);
-router.route("/logout").get(logout);
-router.route("/:id/profile").get(isAuthenticated, getProfile);
-router
-  .route("/profile/edit")
-  .post(isAuthenticated, upload.single("profilePhoto"), editProfile);
-router.route("/suggested").get(isAuthenticated, getSuggestedUsers);
-router.route("/followorunfollow/:id").post(isAuthenticated, followOrUnfollow);
+// Auth routes
+router.post("/register", register);
+router.post("/verify-email", verifyEmail);
+router.post("/login", login);
+router.post("/verify-login-otp", verifyLoginOTP);
+router.post("/resend-login-otp", resendLoginOTP);
+router.post("/resend-signup-otp", resendSignupOTP);
+router.get("/logout", logout);
+
+// Profile routes
+router.get("/:id/profile", isAuthenticated, getProfile);
+router.post("/profile/edit", isAuthenticated, upload.single("file"), editProfile);
+
+// User interaction routes
+router.get("/suggested", isAuthenticated, getSuggestedUsers);
+router.post("/followorunfollow/:id", isAuthenticated, followOrUnfollow);
 
 export default router;

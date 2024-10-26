@@ -1,17 +1,17 @@
-import React, { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
-import { Dialog, DialogContent, DialogTrigger } from "./ui/dialog";
-import { Bookmark, MessageCircle, MoreHorizontal, Send, Share2 } from "lucide-react";
-import { Button } from "./ui/button";
-import { FaHeart, FaRegHeart } from "react-icons/fa";
-import CommentDialog from "./CommentDialog";
-import { useDispatch, useSelector } from "react-redux";
-import axios from "axios";
-import { toast } from "sonner";
-import { setPosts, setSelectedPost } from "@/redux/postSlice";
-import { Badge } from "./ui/badge";
-import { format, isValid } from "date-fns";
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useDispatch, useSelector } from 'react-redux';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { Dialog, DialogContent, DialogTrigger } from './ui/dialog';
+import { Bookmark, MessageCircle, MoreHorizontal, Send, Share2 } from 'lucide-react';
+import { Button } from './ui/button';
+import { FaHeart, FaRegHeart } from 'react-icons/fa';
+import CommentDialog from './CommentDialog';
+import { Badge } from './ui/badge';
+import { format, isValid } from 'date-fns';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { setPosts } from '@/redux/postSlice';
 
 const Post = ({ post, index }) => {
   const [text, setText] = useState("");
@@ -19,10 +19,10 @@ const Post = ({ post, index }) => {
   const [isBookmarked, setIsBookmarked] = useState(false);
   const { user } = useSelector((store) => store.auth);
   const { posts } = useSelector((store) => store.post);
-  const [liked, setLiked] = useState(post.likes.includes(user?._id) || false);
-  const [postLike, setPostLike] = useState(post.likes.length);
-  const [comment, setComment] = useState(post.comments);
-  const [isImageZoomed, setIsImageZoomed] = useState(false);
+  const [liked, setLiked] = useState(post?.likes?.includes(user?._id) || false);
+  const [postLike, setPostLike] = useState(post?.likes?.length || 0);
+  const [comment, setComment] = useState(post?.comments || []);
+  const [isMediaZoomed, setIsMediaZoomed] = useState(false);
   const dispatch = useDispatch();
 
   const formatDate = (dateString) => {
@@ -52,6 +52,11 @@ const Post = ({ post, index }) => {
     }
   };
 
+  const mediaZoomVariants = {
+    normal: { scale: 1 },
+    zoomed: { scale: 1.05 }
+  };
+
   const likeAnimation = {
     scale: [1, 1.3, 1],
     rotate: [0, -15, 15, -15, 0],
@@ -61,11 +66,6 @@ const Post = ({ post, index }) => {
   const iconAnimation = {
     hover: { scale: 1.1, rotate: 5 },
     tap: { scale: 0.95 }
-  };
-
-  const imageZoomVariants = {
-    normal: { scale: 1 },
-    zoomed: { scale: 1.05 }
   };
 
   const changeEventHandler = (e) => {
@@ -99,7 +99,7 @@ const Post = ({ post, index }) => {
         toast.success(res.data.message);
       }
     } catch (error) {
-      console.log(error);
+      console.error(error);
       toast.error("Failed to update like status");
     }
   };
@@ -126,7 +126,7 @@ const Post = ({ post, index }) => {
         setText("");
       }
     } catch (error) {
-      console.log(error);
+      console.error(error);
       toast.error("Failed to add comment");
     }
   };
@@ -142,7 +142,7 @@ const Post = ({ post, index }) => {
         toast.success(res.data.message);
       }
     } catch (error) {
-      console.log(error);
+      console.error(error);
       toast.error("Failed to bookmark post");
     }
   };
@@ -158,7 +158,7 @@ const Post = ({ post, index }) => {
         toast.success(res.data.message);
       }
     } catch (error) {
-      console.log(error);
+      console.error(error);
       toast.error("Failed to delete post");
     }
   };
@@ -262,22 +262,31 @@ const Post = ({ post, index }) => {
         </div>
 
         <motion.div
-          variants={imageZoomVariants}
-          animate={isImageZoomed ? "zoomed" : "normal"}
+          variants={mediaZoomVariants}
+          animate={isMediaZoomed ? "zoomed" : "normal"}
           whileHover="zoomed"
-          onHoverStart={() => setIsImageZoomed(true)}
-          onHoverEnd={() => setIsImageZoomed(false)}
+          onHoverStart={() => setIsMediaZoomed(true)}
+          onHoverEnd={() => setIsMediaZoomed(false)}
           className="relative rounded-xl overflow-hidden shadow-inner mb-4"
         >
-          <img
-            className="w-full aspect-square object-cover transition-transform duration-300"
-            src={post.image}
-            alt="post content"
-            loading="lazy"
-          />
+          {post?.mediaType === 'video' ? (
+            <video
+              className="w-full aspect-video object-cover"
+              src={post.video}
+              controls
+              preload="metadata"
+            />
+          ) : (
+            <img
+              className="w-full aspect-square object-cover transition-transform duration-300"
+              src={post.image}
+              alt="post content"
+              loading="lazy"
+            />
+          )}
           <motion.div
             initial={{ opacity: 0 }}
-            animate={{ opacity: isImageZoomed ? 1 : 0 }}
+            animate={{ opacity: isMediaZoomed ? 1 : 0 }}
             className="absolute inset-0 bg-black/10"
           />
         </motion.div>
@@ -308,10 +317,7 @@ const Post = ({ post, index }) => {
               whileTap="tap"
             >
               <MessageCircle
-                onClick={() => {
-                  dispatch(setSelectedPost(post));
-                  setOpen(true);
-                }}
+                onClick={() => setOpen(true)}
                 className="cursor-pointer text-gray-600 hover:text-blue-600 transition-colors"
                 size={28}
               />
@@ -354,10 +360,7 @@ const Post = ({ post, index }) => {
           {comment.length > 0 && (
             <motion.span
               whileHover={{ color: "#3B82F6" }}
-              onClick={() => {
-                dispatch(setSelectedPost(post));
-                setOpen(true);
-              }}
+              onClick={() => setOpen(true)}
               className="cursor-pointer text-sm text-gray-500 block hover:underline"
             >
               View all {comment.length} comments

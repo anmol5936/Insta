@@ -1,329 +1,351 @@
-import sharp from "sharp";
+import sharp from 'sharp';
+import Post from "../models/post.model.js";
 import cloudinary from "../utils/cloudinary.js";
-import { Post } from "../models/post.model.js";
-import { User } from "../models/user.model.js";
-import { Comment } from "../models/comment.model.js";
-import { getReceiverSocketId, io } from "../socket/socket.js";
-import CryptoJS from "crypto-js";
+import fs from "fs";
+import { promisify } from "util";
+import path from "path";
+import { User } from '../models/user.model.js';
+
+const unlinkAsync = promisify(fs.unlink);
 
 export const addNewPost = async (req, res) => {
   try {
     const { caption } = req.body;
-    const image = req.file;
-    const authorId = req.id;
+    const file = req.file;
 
-    if (!image) return res.status(400).json({ message: "Image required" });
+    // Get user ID from auth token
+    const userId = req.id; // Assuming req.id is correctly set by the authentication middleware
 
-    // image upload
-    const optimizedImageBuffer = await sharp(image.buffer)
-      .resize({ width: 800, height: 800, fit: "inside" })
-      .toFormat("jpeg", { quality: 80 })
-      .toBuffer();
-
-    // buffer to data uri
-    const fileUri = `data:image/jpeg;base64,${optimizedImageBuffer.toString(
-      "base64"
-    )}`;
-    const cloudResponse = await cloudinary.uploader.upload(fileUri);
-    const post = await Post.create({
-      caption,
-      image: cloudResponse.secure_url,
-      author: authorId,
-    });
-    const user = await User.findById(authorId);
-    if (user) {
-      user.posts.push(post._id);
-      await user.save();
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
     }
 
-    await post.populate({ path: "author", select: "-password" });
+    if (!file && !caption) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide either a caption or media file",
+      });
+    }
 
-    return res.status(201).json({
-      message: "New post added",
-      post,
+    let mediaUrl = "";
+    let mediaType = "";
+
+    if (file) {
+      try {
+        // Validate file type
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'video/mp4'];
+        if (!allowedTypes.includes(file.mimetype)) {
+          await unlinkAsync(file.path);
+          return res.status(400).json({
+            success: false,
+            message: "Invalid file type. Only JPEG, PNG, and MP4 are allowed",
+          });
+        }
+
+        // Upload to Cloudinary
+        const result = await cloudinary.uploader.upload(file.path, {
+          resource_type: "auto",
+          folder: "posts",
+          transformation: file.mimetype.startsWith('image') ? [
+            { width: 1080, height: 1080, crop: "limit" }
+          ] : undefined,
+        });
+
+        mediaUrl = result.secure_url;
+        mediaType = result.resource_type;
+
+        // Remove temporary file after successful upload
+        await unlinkAsync(file.path);
+      } catch (uploadError) {
+        console.error("Upload error:", uploadError);
+        // If file exists but upload failed, clean up
+        if (file && fs.existsSync(file.path)) {
+          await unlinkAsync(file.path);
+        }
+        return res.status(500).json({
+          success: false,
+          message: `Upload failed: ${uploadError.message}`,
+        });
+      }
+    }
+
+    const postData = {
+      caption,
+      author: userId,
+      ...(mediaUrl && {
+        [mediaType === 'video' ? 'video' : 'image']: mediaUrl,
+        mediaType,
+      }),
+    };
+
+    const post = await Post.create(postData);
+
+    const populatedPost = await Post.findById(post._id)
+      .populate('author', 'username name profilePicture')
+      .populate('comments.author', 'username name profilePicture');
+
+    res.status(201).json({
       success: true,
+      message: "Post created successfully",
+      post: populatedPost,
     });
   } catch (error) {
-    console.log(error);
+    console.error("Error in addNewPost:", error);
+    // Clean up temporary file if it exists
+    if (req.file && fs.existsSync(req.file.path)) {
+      await unlinkAsync(req.file.path);
+    }
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to create post",
+    });
   }
 };
+
 export const getAllPost = async (req, res) => {
   try {
     const posts = await Post.find()
-      .sort({ createdAt: -1 })
-      .populate({ path: "author", select: "username profilePicture" })
-      .populate({
-        path: "comments",
-        sort: { createdAt: -1 },
-        populate: {
-          path: "author",
-          select: "username profilePicture",
-        },
-      });
-    return res.status(200).json({
-      posts,
+      .populate('author', 'username profilePicture')
+      .populate('comments.author', 'username profilePicture')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
       success: true,
+      posts,
     });
   } catch (error) {
-    console.log(error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
+
 export const getUserPost = async (req, res) => {
   try {
-    const authorId = req.id;
-    const posts = await Post.find({ author: authorId })
-      .sort({ createdAt: -1 })
-      .populate({
-        path: "author",
-        select: "username, profilePicture",
-      })
-      .populate({
-        path: "comments",
-        sort: { createdAt: -1 },
-        populate: {
-          path: "author",
-          select: "username, profilePicture",
-        },
-      });
-    return res.status(200).json({
-      posts,
+    const posts = await Post.find({ author: req.user._id })
+      .populate('author', 'username profilePicture')
+      .populate('comments.author', 'username profilePicture')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
       success: true,
+      posts,
     });
   } catch (error) {
-    console.log(error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
+
 export const likePost = async (req, res) => {
   try {
-    const likeKrneWalaUserKiId = req.id;
-    const postId = req.params.id;
-    const post = await Post.findById(postId);
-    if (!post)
-      return res
-        .status(404)
-        .json({ message: "Post not found", success: false });
-
-    // like logic started
-    await post.updateOne({ $addToSet: { likes: likeKrneWalaUserKiId } });
-    await post.save();
-
-    // implement socket io for real time notification
-    const user = await User.findById(likeKrneWalaUserKiId).select(
-      "username profilePicture"
-    );
-
-    const postOwnerId = post.author.toString();
-    if (postOwnerId !== likeKrneWalaUserKiId) {
-      // emit a notification event
-      const notification = {
-        type: "like",
-        userId: likeKrneWalaUserKiId,
-        userDetails: user,
-        postId,
-        message: "Your post was liked",
-      };
-      const postOwnerSocketId = getReceiverSocketId(postOwnerId);
-      io.to(postOwnerSocketId).emit("notification", notification);
+    const post = await Post.findById(req.params.id);
+    
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
     }
 
-    return res.status(200).json({ message: "Post liked", success: true });
-  } catch (error) {}
+    if (post.likes.includes(req.user._id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Post already liked",
+      });
+    }
+
+    post.likes.push(req.user._id);
+    await post.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Post liked successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
 };
+
 export const dislikePost = async (req, res) => {
   try {
-    const likeKrneWalaUserKiId = req.id;
-    const postId = req.params.id;
-    const post = await Post.findById(postId);
-    if (!post)
-      return res
-        .status(404)
-        .json({ message: "Post not found", success: false });
-
-    // like logic started
-    await post.updateOne({ $pull: { likes: likeKrneWalaUserKiId } });
-    await post.save();
-
-    // implement socket io for real time notification
-    const user = await User.findById(likeKrneWalaUserKiId).select(
-      "username profilePicture"
-    );
-    const postOwnerId = post.author.toString();
-    if (postOwnerId !== likeKrneWalaUserKiId) {
-      // emit a notification event
-      const notification = {
-        type: "dislike",
-        userId: likeKrneWalaUserKiId,
-        userDetails: user,
-        postId,
-        message: "Your post was liked",
-      };
-      const postOwnerSocketId = getReceiverSocketId(postOwnerId);
-      io.to(postOwnerSocketId).emit("notification", notification);
+    const post = await Post.findById(req.params.id);
+    
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
     }
 
-    return res.status(200).json({ message: "Post disliked", success: true });
-  } catch (error) {}
+    if (!post.likes.includes(req.user._id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Post not liked yet",
+      });
+    }
+
+    post.likes = post.likes.filter(id => id.toString() !== req.user._id.toString());
+    await post.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Post disliked successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
 };
-const ENCRYPTION_KEY =
-  "b4b68c9c73034fb7d3c9e5fcb9bcf156e43b8c95f34346e86fce70db70b8d4d4";
 
 export const addComment = async (req, res) => {
   try {
-    const postId = req.params.id;
-    const commentKrneWalaUserKiId = req.id;
-    const { text } = req.body;
-
-    const post = await Post.findById(postId);
-
-    if (!text) {
-      return res
-        .status(400)
-        .json({ message: "Text is required", success: false });
+    const post = await Post.findById(req.params.id);
+    
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
     }
 
-    const encryptedText = CryptoJS.AES.encrypt(text, ENCRYPTION_KEY).toString();
-
-    const comment = await Comment.create({
-      text: encryptedText,
-      author: commentKrneWalaUserKiId,
-      post: postId,
-    });
-
-    await comment.populate({
-      path: "author",
-      select: "username profilePicture",
-    });
-
-    post.comments.push(comment._id);
-    await post.save();
-
-    // Decrypt the comment text before sending the response
-    const decryptedComment = {
-      ...comment.toObject(),
-      text: text, // Use original text since we have it
+    const comment = {
+      content: req.body.text,
+      author: req.user._id,
     };
 
-    return res.status(201).json({
-      message: "Comment Added",
-      comment: decryptedComment,
+    post.comments.push(comment);
+    await post.save();
+
+    const populatedComment = await Post.findOne(
+      { _id: post._id, "comments._id": post.comments[post.comments.length - 1]._id }
+    )
+    .populate('comments.author', 'username profilePicture')
+    .then(doc => doc.comments[doc.comments.length - 1]);
+
+    res.status(200).json({
       success: true,
+      message: "Comment added successfully",
+      comment: populatedComment,
     });
   } catch (error) {
-    console.log(error);
-    return res
-      .status(500)
-      .json({ message: "Internal server error", success: false });
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
+
 export const getCommentsOfPost = async (req, res) => {
   try {
-    const postId = req.params.id;
-
-    const comments = await Comment.find({ post: postId }).populate(
-      "author",
-      "username profilePicture"
-    );
-
-    if (!comments || comments.length === 0) {
+    const post = await Post.findById(req.params.id)
+      .populate('comments.author', 'username profilePicture');
+    
+    if (!post) {
       return res.status(404).json({
-        message: "No comments found for this post",
         success: false,
+        message: "Post not found",
       });
     }
 
-    // Decrypt each comment
-    const decryptedComments = comments.map((comment) => {
-      try {
-        const bytes = CryptoJS.AES.decrypt(comment.text, ENCRYPTION_KEY);
-        const decryptedText = bytes.toString(CryptoJS.enc.Utf8);
-
-        return {
-          ...comment.toObject(), // Convert Mongoose document to plain object
-          text: decryptedText,
-        };
-      } catch (error) {
-        console.error("Decryption failed for comment:", comment._id);
-        return {
-          ...comment.toObject(),
-          text: "Decryption failed",
-        };
-      }
-    });
-
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
-      comments: decryptedComments,
+      comments: post.comments,
     });
   } catch (error) {
-    console.log(error);
-    return res
-      .status(500)
-      .json({ message: "Internal server error", success: false });
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
+
 export const deletePost = async (req, res) => {
   try {
-    const postId = req.params.id;
-    const authorId = req.id;
+    const post = await Post.findById(req.params.id);
+    
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
 
-    const post = await Post.findById(postId);
-    if (!post)
-      return res
-        .status(404)
-        .json({ message: "Post not found", success: false });
+    if (post.author.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized to delete this post",
+      });
+    }
 
-    // check if the logged-in user is the owner of the post
-    if (post.author.toString() !== authorId)
-      return res.status(403).json({ message: "Unauthorized" });
+    // Delete media from cloudinary if exists
+    if (post.image || post.video) {
+      const publicId = post.image || post.video;
+      await cloudinary.uploader.destroy(publicId);
+    }
 
-    // delete post
-    await Post.findByIdAndDelete(postId);
+    await post.deleteOne();
 
-    // remove the post id from the user's post
-    let user = await User.findById(authorId);
-    user.posts = user.posts.filter((id) => id.toString() !== postId);
-    await user.save();
-
-    // delete associated comments
-    await Comment.deleteMany({ post: postId });
-
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
-      message: "Post deleted",
+      message: "Post deleted successfully",
     });
   } catch (error) {
-    console.log(error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
+
 export const bookmarkPost = async (req, res) => {
   try {
-    const postId = req.params.id;
-    const authorId = req.id;
-    const post = await Post.findById(postId);
-    if (!post)
-      return res
-        .status(404)
-        .json({ message: "Post not found", success: false });
+    const post = await Post.findById(req.params.id);
+    const user = await User.findById(req.user._id);
+    
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
 
-    const user = await User.findById(authorId);
-    if (user.bookmarks.includes(post._id)) {
-      // already bookmarked -> remove from the bookmark
-      await user.updateOne({ $pull: { bookmarks: post._id } });
-      await user.save();
-      return res.status(200).json({
-        type: "unsaved",
-        message: "Post removed from bookmark",
+    const isBookmarked = post.bookmarks.includes(req.user._id);
+
+    if (isBookmarked) {
+      post.bookmarks = post.bookmarks.filter(id => id.toString() !== req.user._id.toString());
+      user.bookmarks = user.bookmarks.filter(id => id.toString() !== post._id.toString());
+      await Promise.all([post.save(), user.save()]);
+      
+      res.status(200).json({
         success: true,
+        message: "Post removed from bookmarks",
       });
     } else {
-      // bookmark krna pdega
-      await user.updateOne({ $addToSet: { bookmarks: post._id } });
-      await user.save();
-      return res
-        .status(200)
-        .json({ type: "saved", message: "Post bookmarked", success: true });
+      post.bookmarks.push(req.user._id);
+      user.bookmarks.push(post._id);
+      await Promise.all([post.save(), user.save()]);
+      
+      res.status(200).json({
+        success: true,
+        message: "Post bookmarked successfully",
+      });
     }
   } catch (error) {
-    console.log(error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };

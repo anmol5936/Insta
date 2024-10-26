@@ -3,43 +3,60 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { Textarea } from "./ui/textarea";
 import { Button } from "./ui/button";
-import { readFileAsDataURL } from "@/lib/utils";
-import { Loader2, ImagePlus, X } from "lucide-react";
+import { readFileAsDataURL, formatFileSize, isValidFileType } from "@/lib/utils";
+import { Loader2, ImagePlus, X, Film, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import axios from "axios";
 import { useDispatch, useSelector } from "react-redux";
 import { setPosts } from "@/redux/postSlice";
 import { motion, AnimatePresence } from "framer-motion";
+import { Progress } from "./ui/progress";
+
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
 const CreatePost = ({ open, setOpen }) => {
-  const imageRef = useRef();
-  const [file, setFile] = useState("");
+  const fileRef = useRef();
+  const [file, setFile] = useState(null);
   const [caption, setCaption] = useState("");
-  const [imagePreview, setImagePreview] = useState("");
+  const [mediaPreview, setMediaPreview] = useState("");
   const [loading, setLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const { user } = useSelector((store) => store.auth);
   const { posts } = useSelector((store) => store.post);
   const dispatch = useDispatch();
 
   const fileChangeHandler = async (e) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setFile(file);
-      const dataUrl = await readFileAsDataURL(file);
-      setImagePreview(dataUrl);
+    const selectedFile = e.target.files?.[0];
+    if (!selectedFile) return;
+
+    if (!isValidFileType(selectedFile)) {
+      toast.error("Unsupported file type. Please upload an image or video.");
+      return;
     }
+
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      toast.error(`File size must be less than ${formatFileSize(MAX_FILE_SIZE)}`);
+      return;
+    }
+
+    setFile(selectedFile);
+    const dataUrl = await readFileAsDataURL(selectedFile);
+    setMediaPreview(dataUrl);
   };
 
   const createPostHandler = async (e) => {
-    if (!caption.trim() && !imagePreview) {
-      toast.error("Please add a caption or image");
+    if (!caption.trim() && !file) {
+      toast.error("Please add a caption or media");
       return;
     }
 
     const formData = new FormData();
     formData.append("caption", caption);
-    if (imagePreview) formData.append("image", file);
     
+    if (file) {
+      formData.append("file", file); // Changed to match multer field name
+    }
+
     try {
       setLoading(true);
       const res = await axios.post(
@@ -50,28 +67,37 @@ const CreatePost = ({ open, setOpen }) => {
             "Content-Type": "multipart/form-data",
           },
           withCredentials: true,
+          onUploadProgress: (progressEvent) => {
+            const progress = (progressEvent.loaded / progressEvent.total) * 100;
+            setUploadProgress(Math.round(progress));
+          },
         }
       );
+      
       if (res.data.success) {
         dispatch(setPosts([res.data.post, ...posts]));
         toast.success(res.data.message);
         setOpen(false);
-        // Reset form
         setCaption("");
-        setImagePreview("");
-        setFile("");
+        setMediaPreview("");
+        setFile(null);
+        setUploadProgress(0);
       }
     } catch (error) {
-      toast.error(error.response.data.message);
+      console.error("Upload error:", error);
+      toast.error(error.response?.data?.message || "Error creating post");
     } finally {
       setLoading(false);
     }
   };
 
-  const removeImage = () => {
-    setImagePreview("");
-    setFile("");
+  const removeMedia = () => {
+    setMediaPreview("");
+    setFile(null);
+    setUploadProgress(0);
   };
+
+  const isVideo = file?.type.startsWith('video/');
 
   return (
     <Dialog open={open}>
@@ -97,7 +123,7 @@ const CreatePost = ({ open, setOpen }) => {
               <h1 className="font-semibold text-sm bg-gradient-to-r from-violet-600 to-fuchsia-600 bg-clip-text text-transparent">
                 {user?.username}
               </h1>
-              <span className="text-gray-600 text-xs">Share your thoughts...</span>
+              <span className="text-gray-600 text-xs">Share your moments...</span>
             </div>
           </div>
 
@@ -109,41 +135,67 @@ const CreatePost = ({ open, setOpen }) => {
           />
 
           <AnimatePresence>
-            {imagePreview && (
+            {mediaPreview && (
               <motion.div 
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
                 className="relative w-full h-64 group"
               >
-                <img
-                  src={imagePreview}
-                  alt="preview"
-                  className="w-full h-full object-cover rounded-xl ring-2 ring-violet-200"
-                />
+                {isVideo ? (
+                  <video
+                    src={mediaPreview}
+                    className="w-full h-full object-cover rounded-xl ring-2 ring-violet-200"
+                    controls
+                  />
+                ) : (
+                  <img
+                    src={mediaPreview}
+                    alt="preview"
+                    className="w-full h-full object-cover rounded-xl ring-2 ring-violet-200"
+                  />
+                )}
                 <button
-                  onClick={removeImage}
+                  onClick={removeMedia}
                   className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all duration-300 hover:bg-red-600"
                 >
                   <X className="w-4 h-4" />
                 </button>
+                {file && (
+                  <div className="absolute bottom-2 left-2 right-2 bg-black/50 text-white text-xs p-2 rounded-lg">
+                    {file.name} ({formatFileSize(file.size)})
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
 
+          {loading && uploadProgress > 0 && (
+            <div className="space-y-2">
+              <Progress value={uploadProgress} className="h-2" />
+              <p className="text-sm text-gray-500 text-center">
+                Uploading... {uploadProgress}%
+              </p>
+            </div>
+          )}
+
           <div className="flex gap-3">
             <Button
-              onClick={() => imageRef.current.click()}
+              onClick={() => fileRef.current.click()}
               className="flex-1 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white hover:opacity-90 transition-all duration-300"
               disabled={loading}
             >
-              <ImagePlus className="mr-2 h-4 w-4" />
-              Add Photo
+              {file?.type.startsWith('video/') ? (
+                <Film className="mr-2 h-4 w-4" />
+              ) : (
+                <ImagePlus className="mr-2 h-4 w-4" />
+              )}
+              Add Media
             </Button>
 
             <Button
               onClick={createPostHandler}
-              disabled={loading || (!caption.trim() && !imagePreview)}
+              disabled={loading || (!caption.trim() && !mediaPreview)}
               className="flex-1 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white hover:opacity-90 transition-all duration-300"
             >
               {loading ? (
@@ -156,12 +208,17 @@ const CreatePost = ({ open, setOpen }) => {
               )}
             </Button>
           </div>
+
+          <div className="text-xs text-gray-500 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" />
+            <span>Supported formats: Images (JPEG, PNG, GIF) and Videos (MP4, WebM) up to 100MB</span>
+          </div>
         </div>
 
         <input
-          ref={imageRef}
+          ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/*,video/*"
           className="hidden"
           onChange={fileChangeHandler}
         />
